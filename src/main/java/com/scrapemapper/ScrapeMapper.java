@@ -97,7 +97,7 @@ public class ScrapeMapper {
 
             // recurse through the unvisited internal links
             for(String internalLink: page.internalLinks) {
-                if(!isVisited(internalLink)) {
+                if(!isVisited(internalLink, this.visited)) {
                     scrape(internalLink);
                 }
             }
@@ -110,7 +110,7 @@ public class ScrapeMapper {
      * @param rootUrl
      * @return
      */
-    public boolean isPageLink(String href, String rootUrl) {
+    public static boolean isPageLink(String href, String rootUrl) {
         boolean retval =
                 href.startsWith("#")
                 || href.startsWith("/#")
@@ -127,7 +127,7 @@ public class ScrapeMapper {
      * @param rootUrl
      * @return
      */
-    public boolean isInternalLink(String href, String rootUrl) {
+    public static boolean isInternalLink(String href, String rootUrl) {
         return (href.startsWith(rootUrl) || href.startsWith("/"))
                 && !isPageLink(href, rootUrl);
     }
@@ -137,7 +137,7 @@ public class ScrapeMapper {
      * @param href
      * @return
      */
-    public boolean isVisited(String href) {
+    public static boolean isVisited(String href, List<String> visited) {
         return visited.contains(href) || visited.contains(href + "/");
     }
 
@@ -146,7 +146,7 @@ public class ScrapeMapper {
      * @param val
      * @param list
      */
-    public void addToList(String val, List<String> list) {
+    public static void addToList(String val, List<String> list) {
         if(!list.contains(val)) {
             list.add(val);
         }
