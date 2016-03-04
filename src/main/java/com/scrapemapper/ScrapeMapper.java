@@ -146,6 +146,9 @@ public class ScrapeMapper {
             return results;
         }
 
+        // Add url to visited list to block duplicate reads, even if the current read fails.s
+        addToList(url, visited);
+
         if(isDisallowed(url, disallowed)) {
             logger.error(String.format("URL % is disallowed,", url));
             return results;
@@ -192,7 +195,6 @@ public class ScrapeMapper {
 
             // append the page to the results
             results.add(page);
-            visited.add(url);
 
             // recurse through the unvisited internal links
             for(String internalLink: page.internalLinks) {
@@ -284,6 +286,16 @@ public class ScrapeMapper {
     }
 
     /**
+     * Encode invalid characters in a url
+     * @param url
+     * @return
+     */
+    public static String formatUrl(String url) {
+        String retval = url.replace(" ", "%20");
+        return retval;
+    }
+
+    /**
      * Create a jsoup document from the url. Return null on error.
      * @param url
      * @return
@@ -294,9 +306,9 @@ public class ScrapeMapper {
         try {
 
             //doc = Jsoup.connect(url).get();
-
+            String formattedUrl = formatUrl(url);
             HttpClient client = HttpClientBuilder.create().build();
-            HttpGet request = new HttpGet(url);
+            HttpGet request = new HttpGet(formattedUrl);
 
             // add request header
             request.addHeader("User-Agent", DEFAULT_USER_AGENT);
