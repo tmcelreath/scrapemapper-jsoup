@@ -3,14 +3,20 @@ package com.scrapemapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.util.concurrent.RateLimiter;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.impl.client.HttpClientBuilder;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.select.Elements;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -18,14 +24,43 @@ public class ScrapeMapper {
 
     private static Logger logger = LoggerFactory.getLogger(ScrapeMapper.class);
 
+    private Integer rateLimitPerSecond;
+    private RateLimiter limiter;
+    private String rootUrl;
+    private List<Page> results;
+    private List<String> disallowed;
+    private List<String> visited;
+    private ObjectMapper objectMapper;
+
+    // Jsoup attribute query strings
     public static final String ATTR_HREF = "abs:href";
     public static final String ATTR_SRC = "abs:src";
 
+    // Default http request rate limit
     public static final Integer RATE_LIMIT_DEFAULT = 1;
-    public ScrapeMapper() {
+
+    // Output file name
+    public static final String RESULTS_FILE_NAME = "sitemap.json";
+
+    // Default user agent
+    public static final String DEFAULT_USER_AGENT = "W3C-checklink/4.5 [4.160] libwww-perl/5.823";
+
+    public ScrapeMapper(String url) {
+        this(url, RATE_LIMIT_DEFAULT);
+    }
+
+    public ScrapeMapper(String url, Integer rateLimitPerSecond) {
+        this.rootUrl = url;
+        this.rateLimitPerSecond = rateLimitPerSecond != null ? rateLimitPerSecond : RATE_LIMIT_DEFAULT;
+        this.limiter = RateLimiter.create(this.rateLimitPerSecond);
+        this.results = new ArrayList<>();
+        this.disallowed = new ArrayList<>();
+        this.visited = new ArrayList<>();
+        this.objectMapper = new ObjectMapper();
     }
 
     public static void main(String[] args) {
+
         String rootUrl = (args.length > 0) ? args[0] : null;
         String ratePerSecondStr = (args.length > 1) ? args[1] : null;
         Integer ratePerSecond;
@@ -36,24 +71,41 @@ public class ScrapeMapper {
             ratePerSecond = RATE_LIMIT_DEFAULT;
         }
 
-        ScrapeMapper scrapeMapper = new ScrapeMapper();
-        List<Page> results = scrapeMapper.scrape(rootUrl, ratePerSecond);
+        ScrapeMapper scrapeMapper = new ScrapeMapper(rootUrl, ratePerSecond);
+        List<Page> results = scrapeMapper.scrape();
+
         try {
-            File file = new File("sitemap.json");
+            File file = new File(RESULTS_FILE_NAME);
             if(file.exists()) {
                 file.delete();
             }
-            new ObjectMapper().writeValue(new File("sitemap.json"), results);
+            new ObjectMapper().writeValue(new File(RESULTS_FILE_NAME), results);
         } catch (IOException e) {
-            logger.error("CCOULD NOT CREATE SITEMAP FILE.", e);
+            logger.error("COULD NOT CREATE SITEMAP FILE.", e);
         }
     }
 
+    /**
+     * Return a JSON string representing the site map of a root URL.
+     * Individual page records will contain the following data:
+     *
+     *  -- url: URL
+     *  -- pageTitle: Page Title
+     *  -- internalLinks: List of Internal Links (within the current domain)
+     *  -- externalLinks: List of External Links (outside of the current domain)
+     *  -- mediaSources: List of resource locations (images, script files, etc.)
+     *
+     *  The scraper will utilize the robots.txt of the domain where available to
+     *  skip any disallowed directories.
+     *
+     * @param rootURL
+     * @return
+     */
     public String getSiteMap(String rootURL) {
         if(rootURL==null) {
             return "URL NOT PROVIDED";
         }
-        List<Page> results = scrape(rootURL);
+        List<Page> results = scrape();
         try {
             return new ObjectMapper().writeValueAsString(results);
         } catch (JsonProcessingException e) {
@@ -61,15 +113,20 @@ public class ScrapeMapper {
         }
     }
 
-    public static List<Page> scrape(String rootUrl, Integer ratePerSecond) {
+    private List<Page> scrape() {
+        return scrape(this.rootUrl, this.results, this.visited, this.disallowed, this.limiter);
+    }
+
+    public List<Page> scrape(String rootUrl) {
+        return scrape(rootUrl, RATE_LIMIT_DEFAULT);
+    }
+
+    public List<Page> scrape(String rootUrl, Integer ratePerSecond) {
         RateLimiter limiter = RateLimiter.create(ratePerSecond);
         List<String> disallowed = getDisallowedPaths(rootUrl);
         List<String> visited = new ArrayList<>();
         List<Page> results = new ArrayList<>();
         return scrape(rootUrl, results, visited, disallowed, limiter);
-    }
-    public static List<Page> scrape(String rootUrl) {
-        return scrape(rootUrl, RATE_LIMIT_DEFAULT);
     }
 
     /**
@@ -81,7 +138,7 @@ public class ScrapeMapper {
      * @param limiter
      * @return
      */
-    private static List<Page> scrape(String url, List<Page> results, List<String> visited, List<String> disallowed, RateLimiter limiter) {
+    private List<Page> scrape(String url, List<Page> results, List<String> visited, List<String> disallowed, RateLimiter limiter) {
         logger.info(String.format("SCRAPING: %s", url));
 
         if(url == null) {
@@ -108,7 +165,7 @@ public class ScrapeMapper {
             // collect internal links
             hrefs.stream().filter(elem -> {
                         String href = elem.attr(ATTR_HREF);
-                        return isInternalLink(href, url);
+                        return isInternalLink(href, this.rootUrl);
                     }
             ).forEach(elem -> addToList(elem.attr(ATTR_HREF), page.internalLinks));
 
@@ -126,6 +183,12 @@ public class ScrapeMapper {
 
             // collect file src
             staticFiles.stream().forEach(elem -> page.mediaSources.add(elem.attr(ATTR_SRC)));
+
+            try {
+                logger.info("PAGE: " + this.objectMapper.writeValueAsString(page));
+            } catch(JsonProcessingException e) {
+                logger.error(e.getMessage(), e);
+            }
 
             // append the page to the results
             results.add(page);
@@ -229,8 +292,34 @@ public class ScrapeMapper {
         // connect to the url and create a jsoup document
         Document doc = null;
         try {
-            doc = Jsoup.connect(url).get();
-        } catch (IOException e) {
+
+            //doc = Jsoup.connect(url).get();
+
+            HttpClient client = HttpClientBuilder.create().build();
+            HttpGet request = new HttpGet(url);
+
+            // add request header
+            request.addHeader("User-Agent", DEFAULT_USER_AGENT);
+            HttpResponse response = client.execute(request);
+
+            logger.debug(String.format(
+                    "Response Code : %d", response.getStatusLine().getStatusCode()));
+
+            BufferedReader rd = new BufferedReader(
+                    new InputStreamReader(response.getEntity().getContent()));
+
+            StringBuffer result = new StringBuffer();
+            String line = "";
+
+            while ((line = rd.readLine()) != null) {
+                result.append(line);
+            }
+
+            String resultStr = result.toString();
+
+            doc = Jsoup.parse(resultStr);
+
+        } catch (Exception e) {
             logger.error(String.format("ERROR Connecting to url %s", url), e);
         }
         return doc;
