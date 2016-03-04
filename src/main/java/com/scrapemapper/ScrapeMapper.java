@@ -50,12 +50,27 @@ public class ScrapeMapper {
         }
     }
 
-    public List<Page> scrape(String rootUrl) {
-        return this.scrape(rootUrl, new ArrayList<Page>(), new ArrayList<String>());
+    public static List<Page> scrape(String rootUrl) {
+        List<String> disallowed = getDisallowedPaths(rootUrl);
+        List<String> visited = new ArrayList<>();
+        List<Page> results = new ArrayList<>();
+        return scrape(rootUrl, results, visited, disallowed);
     }
 
-    private List<Page> scrape(String url, List<Page> results, List<String> visited) {
+    private static List<Page> scrape(String url, List<Page> results, List<String> visited, List<String> disallowed) {
         logger.info(String.format("SCRAPING: %s", url));
+
+        if(url == null) {
+            logger.error("URL is null.");
+            return results;
+        }
+
+        for(String path : disallowed) {
+            if (url.contains(path)) {
+                logger.info(String.format("Scraping path % is disallowed.", path));
+                return results;
+            }
+        }
 
         // create a page object to encabulate href and src data.
         Page page = new Page(url);
@@ -106,11 +121,22 @@ public class ScrapeMapper {
                 if(!isVisited(internalLink, visited)) {
                     // TODO: REPLACE WITH GUAVA RATELIMITER
                     try {Thread.sleep(1000);} catch (Exception e) {}
-                    scrape(internalLink, results, visited);
+                    scrape(internalLink, results, visited, disallowed);
                 }
             }
         }
         return results;
+    }
+
+    /**
+     * Call robots.txt file to collect disallowed paths.
+     */
+    public static List<String> getDisallowedPaths(String url) {
+        List<String> retval = new ArrayList<>();
+        // Add standard wordpress admin path.
+        retval.add("/wp-admin/");
+        //TODO: CALL url/robots.txt and add disallowed paths to retrun value.
+        return retval;
     }
 
     /**
