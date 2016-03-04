@@ -72,6 +72,15 @@ public class ScrapeMapper {
         return scrape(rootUrl, RATE_LIMIT_DEFAULT);
     }
 
+    /**
+     * Main sraping recursive method.
+     * @param url
+     * @param results
+     * @param visited
+     * @param disallowed
+     * @param limiter
+     * @return
+     */
     private static List<Page> scrape(String url, List<Page> results, List<String> visited, List<String> disallowed, RateLimiter limiter) {
         logger.info(String.format("SCRAPING: %s", url));
 
@@ -80,26 +89,17 @@ public class ScrapeMapper {
             return results;
         }
 
-        for(String path : disallowed) {
-            if (url.contains(path)) {
-                logger.info(String.format("Scraping path % is disallowed.", path));
-                return results;
-            }
-        }
-
-        // create a page object to encabulate href and src data.
-        Page page = new Page(url);
-
-        // connect to the url and create a jsoup document
-        Document doc = null;
-        try {
-            doc = Jsoup.connect(url).get();
-        } catch (IOException e) {
-            logger.error(String.format("ERROR Connecting to url %s", url), e);
+        if(isDisallowed(url, disallowed)) {
+            logger.error(String.format("URL % is disallowed,", url));
             return results;
         }
 
+        Document doc = getDocument(url);
+
         if(doc != null) {
+
+            // create a page object to encabulate href and src data.
+            Page page = new Page(url);
 
             page.title = doc.getElementsByTag("title").text();
             Elements hrefs = doc.select("a[href]");
@@ -201,5 +201,38 @@ public class ScrapeMapper {
         if(!list.contains(val)) {
             list.add(val);
         }
+    }
+
+    /**
+     * Determine if the url matches the provided list of disallowed paths
+     * @param url
+     * @param disallowed
+     * @return
+     */
+    public static boolean isDisallowed(String url, List<String> disallowed) {
+        //TODO: Use regex? Ugh.
+        for(String path : disallowed) {
+            if (url.contains(path)) {
+                logger.info(String.format("Scraping path % is disallowed.", path));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Create a jsoup document from the url. Return null on error.
+     * @param url
+     * @return
+     */
+    public static Document getDocument(String url) {
+        // connect to the url and create a jsoup document
+        Document doc = null;
+        try {
+            doc = Jsoup.connect(url).get();
+        } catch (IOException e) {
+            logger.error(String.format("ERROR Connecting to url %s", url), e);
+        }
+        return doc;
     }
 }
