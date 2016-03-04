@@ -2,6 +2,7 @@ package com.scrapemapper;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.util.concurrent.RateLimiter;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.select.Elements;
@@ -20,13 +21,23 @@ public class ScrapeMapper {
     public static final String ATTR_HREF = "abs:href";
     public static final String ATTR_SRC = "abs:src";
 
+    public static final Integer RATE_LIMIT_DEFAULT = 1;
     public ScrapeMapper() {
     }
 
     public static void main(String[] args) {
-        String rootUrl = args[0];
+        String rootUrl = (args.length > 0) ? args[0] : null;
+        String ratePerSecondStr = (args.length > 1) ? args[1] : null;
+        Integer ratePerSecond;
+        try {
+            ratePerSecond = new Integer(ratePerSecondStr);
+        } catch(NumberFormatException e) {
+            logger.error(String.format("Invalid rate value %s. Defaulting to 1.", ratePerSecondStr));
+            ratePerSecond = RATE_LIMIT_DEFAULT;
+        }
+
         ScrapeMapper scrapeMapper = new ScrapeMapper();
-        List<Page> results = scrapeMapper.scrape(rootUrl);
+        List<Page> results = scrapeMapper.scrape(rootUrl, ratePerSecond);
         try {
             File file = new File("sitemap.json");
             if(file.exists()) {
@@ -50,14 +61,18 @@ public class ScrapeMapper {
         }
     }
 
-    public static List<Page> scrape(String rootUrl) {
+    public static List<Page> scrape(String rootUrl, Integer ratePerSecond) {
+        RateLimiter limiter = RateLimiter.create(ratePerSecond);
         List<String> disallowed = getDisallowedPaths(rootUrl);
         List<String> visited = new ArrayList<>();
         List<Page> results = new ArrayList<>();
-        return scrape(rootUrl, results, visited, disallowed);
+        return scrape(rootUrl, results, visited, disallowed, limiter);
+    }
+    public static List<Page> scrape(String rootUrl) {
+        return scrape(rootUrl, RATE_LIMIT_DEFAULT);
     }
 
-    private static List<Page> scrape(String url, List<Page> results, List<String> visited, List<String> disallowed) {
+    private static List<Page> scrape(String url, List<Page> results, List<String> visited, List<String> disallowed, RateLimiter limiter) {
         logger.info(String.format("SCRAPING: %s", url));
 
         if(url == null) {
@@ -119,9 +134,10 @@ public class ScrapeMapper {
             // recurse through the unvisited internal links
             for(String internalLink: page.internalLinks) {
                 if(!isVisited(internalLink, visited)) {
-                    // TODO: REPLACE WITH GUAVA RATELIMITER
-                    try {Thread.sleep(1000);} catch (Exception e) {}
-                    scrape(internalLink, results, visited, disallowed);
+                    // the ratelimiter will block until space opens up to run the recursive commnas
+                    limiter.acquire();
+                    // recurse!!
+                    scrape(internalLink, results, visited, disallowed, limiter);
                 }
             }
         }
