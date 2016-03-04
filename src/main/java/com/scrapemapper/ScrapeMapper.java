@@ -1,5 +1,6 @@
 package com.scrapemapper;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -16,40 +17,44 @@ public class ScrapeMapper {
 
     private static Logger logger = LoggerFactory.getLogger(ScrapeMapper.class);
 
-    private final String rootUrl;
-    private List<Page> results;
-    private List<String> visited;
-
     public static final String ATTR_HREF = "abs:href";
     public static final String ATTR_SRC = "abs:src";
 
-    public ScrapeMapper(String url) {
-        this.rootUrl = url;
-        this.results = new ArrayList<>();
-        this.visited = new ArrayList<>();
+    public ScrapeMapper() {
     }
 
     public static void main(String[] args) {
         String rootUrl = args[0];
-        ScrapeMapper scrapeMapper = new ScrapeMapper(rootUrl);
-        scrapeMapper.start();
-    }
-
-    public void start() {
-        scrape(this.rootUrl);
+        ScrapeMapper scrapeMapper = new ScrapeMapper();
+        List<Page> results = scrapeMapper.scrape(rootUrl);
         try {
             File file = new File("sitemap.json");
             if(file.exists()) {
                 file.delete();
             }
-            new ObjectMapper().writeValue(new File("sitemap.json"), this.results);
+            new ObjectMapper().writeValue(new File("sitemap.json"), results);
         } catch (IOException e) {
-            logger.error("Cannot create sitemap file.", e);
+            logger.error("CCOULD NOT CREATE SITEMAP FILE.", e);
         }
     }
 
-    private void scrape(String url) {
+    public String getSiteMap(String rootURL) {
+        if(rootURL==null) {
+            return "URL NOT PROVIDED";
+        }
+        List<Page> results = scrape(rootURL);
+        try {
+            return new ObjectMapper().writeValueAsString(results);
+        } catch (JsonProcessingException e) {
+            return "COULD NOT PROCESS REQUEST";
+        }
+    }
 
+    public List<Page> scrape(String rootUrl) {
+        return this.scrape(rootUrl, new ArrayList<Page>(), new ArrayList<String>());
+    }
+
+    private List<Page> scrape(String url, List<Page> results, List<String> visited) {
         logger.info(String.format("SCRAPING: %s", url));
 
         // create a page object to encabulate href and src data.
@@ -58,9 +63,10 @@ public class ScrapeMapper {
         // connect to the url and create a jsoup document
         Document doc = null;
         try {
-            doc = Jsoup.connect(this.rootUrl).get();
+            doc = Jsoup.connect(url).get();
         } catch (IOException e) {
             logger.error(String.format("ERROR Connecting to url %s", url), e);
+            return results;
         }
 
         if(doc != null) {
@@ -72,20 +78,20 @@ public class ScrapeMapper {
             // collect internal links
             hrefs.stream().filter(elem -> {
                         String href = elem.attr(ATTR_HREF);
-                        return isInternalLink(href, this.rootUrl);
+                        return isInternalLink(href, url);
                     }
             ).forEach(elem -> addToList(elem.attr(ATTR_HREF), page.internalLinks));
 
             // collect external links
             hrefs.stream().filter(elem -> {
                 String href = elem.attr(ATTR_HREF);
-                return !isInternalLink(href, rootUrl) && !isPageLink(href, rootUrl);
+                return !isInternalLink(href, url) && !isPageLink(href, url);
             }).forEach(elem -> addToList(elem.attr(ATTR_HREF), page.externalLinks));
 
             // collect in-page links
             hrefs.stream().filter(elem -> {
                 String href = elem.attr(ATTR_HREF);
-                return isPageLink(href, this.rootUrl);
+                return isPageLink(href, url);
             }).forEach(elem -> addToList(elem.attr(ATTR_HREF), page.pageLinks));
 
             // collect file src
@@ -97,11 +103,14 @@ public class ScrapeMapper {
 
             // recurse through the unvisited internal links
             for(String internalLink: page.internalLinks) {
-                if(!isVisited(internalLink, this.visited)) {
-                    scrape(internalLink);
+                if(!isVisited(internalLink, visited)) {
+                    // TODO: REPLACE WITH GUAVA RATELIMITER
+                    try {Thread.sleep(1000);} catch (Exception e) {}
+                    scrape(internalLink, results, visited);
                 }
             }
         }
+        return results;
     }
 
     /**
