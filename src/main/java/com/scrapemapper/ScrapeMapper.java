@@ -19,16 +19,16 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 public class ScrapeMapper {
 
     private static Logger logger = LoggerFactory.getLogger(ScrapeMapper.class);
 
-    private Integer rateLimitPerSecond;
     private RateLimiter limiter;
     private String rootUrl;
     private List<Page> results;
-    private List<String> disallowed;
+    private List<Pattern> disallowed;
     private List<String> visited;
     private ObjectMapper objectMapper;
 
@@ -51,10 +51,10 @@ public class ScrapeMapper {
 
     public ScrapeMapper(String url, Integer rateLimitPerSecond) {
         this.rootUrl = url;
-        this.rateLimitPerSecond = rateLimitPerSecond != null ? rateLimitPerSecond : RATE_LIMIT_DEFAULT;
-        this.limiter = RateLimiter.create(this.rateLimitPerSecond);
+        Integer rateLimitPerSecond1 = rateLimitPerSecond != null ? rateLimitPerSecond : RATE_LIMIT_DEFAULT;
+        this.limiter = RateLimiter.create(rateLimitPerSecond1);
         this.results = new ArrayList<>();
-        this.disallowed = new ArrayList<>();
+        this.disallowed = getDisallowedPaths(rootUrl);
         this.visited = new ArrayList<>();
         this.objectMapper = new ObjectMapper();
     }
@@ -72,7 +72,7 @@ public class ScrapeMapper {
         }
 
         ScrapeMapper scrapeMapper = new ScrapeMapper(rootUrl, ratePerSecond);
-        List<Page> results = scrapeMapper.scrape();
+        List<Page> results = scrapeMapper.scrape(rootUrl);
 
         try {
             File file = new File(RESULTS_FILE_NAME);
@@ -98,14 +98,14 @@ public class ScrapeMapper {
      *  The scraper will utilize the robots.txt of the domain where available to
      *  skip any disallowed directories.
      *
-     * @param rootURL
+     * @param rootUrl
      * @return
      */
-    public String getSiteMap(String rootURL) {
-        if(rootURL==null) {
+    public String getSiteMap(String rootUrl) {
+        if(rootUrl==null) {
             return "URL NOT PROVIDED";
         }
-        List<Page> results = scrape();
+        List<Page> results = scrape(rootUrl);
         try {
             return new ObjectMapper().writeValueAsString(results);
         } catch (JsonProcessingException e) {
@@ -113,32 +113,12 @@ public class ScrapeMapper {
         }
     }
 
-    private List<Page> scrape() {
-        return scrape(this.rootUrl, this.results, this.visited, this.disallowed, this.limiter);
-    }
-
-    public List<Page> scrape(String rootUrl) {
-        return scrape(rootUrl, RATE_LIMIT_DEFAULT);
-    }
-
-    public List<Page> scrape(String rootUrl, Integer ratePerSecond) {
-        RateLimiter limiter = RateLimiter.create(ratePerSecond);
-        List<String> disallowed = getDisallowedPaths(rootUrl);
-        List<String> visited = new ArrayList<>();
-        List<Page> results = new ArrayList<>();
-        return scrape(rootUrl, results, visited, disallowed, limiter);
-    }
-
     /**
      * Main sraping recursive method.
      * @param url
-     * @param results
-     * @param visited
-     * @param disallowed
-     * @param limiter
      * @return
      */
-    private List<Page> scrape(String url, List<Page> results, List<String> visited, List<String> disallowed, RateLimiter limiter) {
+    private List<Page> scrape(String url) {
         logger.info(String.format("SCRAPING: %s", url));
 
         if(url == null) {
@@ -150,7 +130,7 @@ public class ScrapeMapper {
         addToList(url, visited);
 
         if(isDisallowed(url, disallowed)) {
-            logger.error(String.format("URL % is disallowed,", url));
+            logger.error(String.format("URL %s is disallowed,", url));
             return results;
         }
 
@@ -202,7 +182,7 @@ public class ScrapeMapper {
                     // the ratelimiter will block until space opens up to run the recursive commnas
                     limiter.acquire();
                     // recurse!!
-                    scrape(internalLink, results, visited, disallowed, limiter);
+                    scrape(internalLink);
                 }
             }
         }
@@ -212,11 +192,31 @@ public class ScrapeMapper {
     /**
      * Call robots.txt file to collect disallowed paths.
      */
-    public static List<String> getDisallowedPaths(String url) {
-        List<String> retval = new ArrayList<>();
-        // Add standard wordpress admin path.
-        retval.add("/wp-admin/");
-        //TODO: CALL url/robots.txt and add disallowed paths to retrun value.
+    public static List<Pattern> getDisallowedPaths(String url) {
+
+        boolean testresult = Pattern.compile(".").matcher("http://www.w.com/ads/something").matches();
+
+        List<Pattern> retval = new ArrayList<>();
+        try {
+            String formattedUrl = url.trim() + (url.trim().endsWith("/") ? "" : "/") + "robots.txt";
+            HttpGet request = new HttpGet(formattedUrl);
+            // add request header
+            request.addHeader("User-Agent", DEFAULT_USER_AGENT);
+            HttpResponse response = HttpClientBuilder.create().build().execute(request);
+            BufferedReader rd = new BufferedReader(
+                    new InputStreamReader(response.getEntity().getContent()));
+
+            String line = "";
+            while ((line = rd.readLine()) != null) {
+                if(line.trim().toUpperCase().startsWith("DISALLOW")) {
+                    String disallowPath = line.trim().toLowerCase().substring(9).trim();
+                    retval.add(Pattern.compile(disallowPath.replace("*","\\S+")));
+                }
+            }
+        } catch (IOException e) {
+            logger.error("Error fetching robots.txt", e);
+        }
+
         return retval;
     }
 
@@ -241,7 +241,7 @@ public class ScrapeMapper {
      * Determine if the href is withing the current root domain
      * @param href
      * @param rootUrl
-     * @return
+     * @return boolean
      */
     public static boolean isInternalLink(String href, String rootUrl) {
         return (href.startsWith(rootUrl) || href.startsWith("/"))
@@ -251,7 +251,7 @@ public class ScrapeMapper {
     /**
      * Chek if the value exists in the list of previously-scraped urls
      * @param href
-     * @return
+     * @return boolean
      */
     public static boolean isVisited(String href, List<String> visited) {
         return visited.contains(href) || visited.contains(href + "/");
@@ -272,13 +272,13 @@ public class ScrapeMapper {
      * Determine if the url matches the provided list of disallowed paths
      * @param url
      * @param disallowed
-     * @return
+     * @return boolean
      */
-    public static boolean isDisallowed(String url, List<String> disallowed) {
+    public static boolean isDisallowed(String url, List<Pattern> disallowed) {
         //TODO: Use regex? Ugh.
-        for(String path : disallowed) {
-            if (url.contains(path)) {
-                logger.info(String.format("Scraping path % is disallowed.", path));
+        for(Pattern path : disallowed) {
+            if (path.matcher(url).matches()) {
+                logger.info(String.format("Scraping path %s is disallowed.", path));
                 return true;
             }
         }
@@ -288,7 +288,7 @@ public class ScrapeMapper {
     /**
      * Encode invalid characters in a url
      * @param url
-     * @return
+     * @return String
      */
     public static String formatUrl(String url) {
         String retval = url.replace(" ", "%20");
@@ -298,7 +298,7 @@ public class ScrapeMapper {
     /**
      * Create a jsoup document from the url. Return null on error.
      * @param url
-     * @return
+     * @return Document
      */
     public static Document getDocument(String url) {
         // connect to the url and create a jsoup document
@@ -307,12 +307,11 @@ public class ScrapeMapper {
 
             //doc = Jsoup.connect(url).get();
             String formattedUrl = formatUrl(url);
-            HttpClient client = HttpClientBuilder.create().build();
             HttpGet request = new HttpGet(formattedUrl);
 
             // add request header
             request.addHeader("User-Agent", DEFAULT_USER_AGENT);
-            HttpResponse response = client.execute(request);
+            HttpResponse response = HttpClientBuilder.create().build().execute(request);
 
             logger.debug(String.format(
                     "Response Code : %d", response.getStatusLine().getStatusCode()));
@@ -322,18 +321,18 @@ public class ScrapeMapper {
 
             StringBuffer result = new StringBuffer();
             String line = "";
-
             while ((line = rd.readLine()) != null) {
                 result.append(line);
             }
-
             String resultStr = result.toString();
-
             doc = Jsoup.parse(resultStr);
-
         } catch (Exception e) {
             logger.error(String.format("ERROR Connecting to url %s", url), e);
         }
         return doc;
+    }
+
+    public static void persist(Page page) {
+
     }
 }
