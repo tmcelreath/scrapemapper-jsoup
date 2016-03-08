@@ -31,6 +31,7 @@ public class ScrapeMapper {
     private List<Pattern> disallowed;
     private List<String> visited;
     private ObjectMapper objectMapper;
+    private LinkFactory linkFactory;
 
     // Jsoup attribute query strings
     public static final String ATTR_HREF = "abs:href";
@@ -57,6 +58,7 @@ public class ScrapeMapper {
         this.disallowed = getDisallowedPaths(rootUrl);
         this.visited = new ArrayList<>();
         this.objectMapper = new ObjectMapper();
+        this.linkFactory = new LinkFactory(url);
     }
 
     public static void main(String[] args) {
@@ -145,30 +147,19 @@ public class ScrapeMapper {
             Elements hrefs = doc.select("a[href]");
             Elements staticFiles = doc.select("[src]");
 
-            // collect internal links
-            hrefs.stream().filter(elem -> {
-                        String href = elem.attr(ATTR_HREF);
-                        return isInternalLink(href, this.rootUrl);
-                    }
-            ).forEach(elem -> addToList(elem.attr(ATTR_HREF), page.internalLinks));
-
-            // collect external links
-            hrefs.stream().filter(elem -> {
-                String href = elem.attr(ATTR_HREF);
-                return !isInternalLink(href, url) && !isPageLink(href, url);
-            }).forEach(elem -> addToList(elem.attr(ATTR_HREF), page.externalLinks));
-
-            // collect in-page links
-            hrefs.stream().filter(elem -> {
-                String href = elem.attr(ATTR_HREF);
-                return isPageLink(href, url);
-            }).forEach(elem -> addToList(elem.attr(ATTR_HREF), page.pageLinks));
+            // collect links
+            hrefs.stream().forEach(elem -> {
+                Link link = linkFactory.getLink(elem.attr(ATTR_HREF), "");
+                page.addLink(link);
+            });
 
             // collect file src
-            staticFiles.stream().forEach(elem -> page.mediaSources.add(elem.attr(ATTR_SRC)));
+            staticFiles.stream().forEach(elem -> {
+                page.addSource(elem.attr(ATTR_SRC));
+            });
 
             try {
-                logger.info("PAGE: " + this.objectMapper.writeValueAsString(page));
+                logger.debug("PAGE: " + this.objectMapper.writeValueAsString(page));
             } catch(JsonProcessingException e) {
                 logger.error(e.getMessage(), e);
             }
@@ -177,12 +168,12 @@ public class ScrapeMapper {
             results.add(page);
 
             // recurse through the unvisited internal links
-            for(String internalLink: page.internalLinks) {
-                if(!isVisited(internalLink, visited)) {
+            for(Link internalLink: page.internalLinks) {
+                if(!isVisited(internalLink.getHref(), visited)) {
                     // the ratelimiter will block until space opens up to run the recursive commnas
                     limiter.acquire();
                     // recurse!!
-                    scrape(internalLink);
+                    scrape(internalLink.getHref());
                 }
             }
         }
@@ -218,34 +209,6 @@ public class ScrapeMapper {
         }
 
         return retval;
-    }
-
-    /**
-     * Determine if the href is an in-page anchor
-     * @param href
-     * @param rootUrl
-     * @return
-     */
-    public static boolean isPageLink(String href, String rootUrl) {
-        boolean retval =
-                href.startsWith("#")
-                || href.startsWith("/#")
-                || href.startsWith(String.format("%s#", rootUrl))
-                || href.startsWith(String.format("%s/#", rootUrl))
-                || href.startsWith(String.format("%s?", rootUrl))
-                || href.startsWith(String.format("%s/?", rootUrl));
-        return retval;
-    }
-
-    /**
-     * Determine if the href is withing the current root domain
-     * @param href
-     * @param rootUrl
-     * @return boolean
-     */
-    public static boolean isInternalLink(String href, String rootUrl) {
-        return (href.startsWith(rootUrl) || href.startsWith("/"))
-                && !isPageLink(href, rootUrl);
     }
 
     /**
